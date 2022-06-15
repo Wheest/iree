@@ -668,7 +668,7 @@ iree_status_t iree_vm_bytecode_dispatch_begin(
 iree_status_t iree_vm_bytecode_dispatch_resume(
     iree_vm_stack_t* stack, iree_vm_bytecode_module_t* module,
     iree_byte_span_t call_results, iree_vm_execution_result_t* out_result) {
-  iree_vm_stack_frame_t* current_frame = iree_vm_stack_current_frame(stack);
+  iree_vm_stack_frame_t* current_frame = iree_vm_stack_top(stack);
   iree_vm_registers_t regs =
       iree_vm_bytecode_get_register_storage(current_frame);
   // TODO(benvanik): assert the module is at the top of the frame? We should

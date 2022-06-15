@@ -370,7 +370,7 @@ static iree_status_t IREE_API_PTR iree_vm_native_module_resume_call(
   }
 
   // Resume call using existing top frame.
-  iree_vm_stack_frame_t* callee_frame = iree_vm_stack_current_frame(stack);
+  iree_vm_stack_frame_t* callee_frame = iree_vm_stack_top(stack);
   return iree_vm_native_module_issue_call(
       module, stack, callee_frame, IREE_VM_NATIVE_FUNCTION_CALL_RESUME,
       iree_byte_span_empty(), call_results, out_result);  // tail
