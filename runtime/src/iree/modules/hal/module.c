@@ -211,35 +211,78 @@ IREE_VM_ABI_EXPORT(iree_hal_module_ex_shared_device,  //
 IREE_VM_ABI_EXPORT(iree_hal_module_ex_submit_and_wait,  //
                    iree_hal_module_state_t,             //
                    rr, v) {
-  iree_hal_device_t* device = NULL;
-  IREE_RETURN_IF_ERROR(iree_hal_device_check_deref(args->r0, &device));
-  iree_hal_command_buffer_t* command_buffer = NULL;
-  IREE_RETURN_IF_ERROR(
-      iree_hal_command_buffer_check_deref(args->r1, &command_buffer));
+  iree_vm_stack_frame_t* current_frame = iree_vm_stack_top(stack);
+  if (current_frame->pc == 0) {
+    iree_hal_device_t* device = NULL;
+    IREE_RETURN_IF_ERROR(iree_hal_device_check_deref(args->r0, &device));
+    iree_hal_command_buffer_t* command_buffer = NULL;
+    IREE_RETURN_IF_ERROR(
+        iree_hal_command_buffer_check_deref(args->r1, &command_buffer));
 
-  // Batch with our single command buffer.
-  iree_hal_submission_batch_t batch;
-  memset(&batch, 0, sizeof(batch));
+    // Batch with our single command buffer.
+    iree_hal_submission_batch_t batch;
+    memset(&batch, 0, sizeof(batch));
 
-  iree_hal_command_buffer_t* command_buffer_ptrs[] = {command_buffer};
-  batch.command_buffer_count = IREE_ARRAYSIZE(command_buffer_ptrs);
-  batch.command_buffers = command_buffer_ptrs;
+    iree_hal_command_buffer_t* command_buffer_ptrs[] = {command_buffer};
+    batch.command_buffer_count = IREE_ARRAYSIZE(command_buffer_ptrs);
+    batch.command_buffers = command_buffer_ptrs;
 
-  uint64_t next_semaphore_value = ++state->submit_value;
-  iree_hal_semaphore_t* signal_semaphore_ptrs[] = {state->submit_semaphore};
-  uint64_t signal_semaphore_values[] = {next_semaphore_value};
-  batch.signal_semaphores.count = IREE_ARRAYSIZE(signal_semaphore_ptrs);
-  batch.signal_semaphores.semaphores = signal_semaphore_ptrs;
-  batch.signal_semaphores.payload_values = signal_semaphore_values;
+    uint64_t next_semaphore_value = ++state->submit_value;
+    iree_hal_semaphore_t* signal_semaphore_ptrs[] = {state->submit_semaphore};
+    uint64_t signal_semaphore_values[] = {next_semaphore_value};
+    batch.signal_semaphores.count = IREE_ARRAYSIZE(signal_semaphore_ptrs);
+    batch.signal_semaphores.semaphores = signal_semaphore_ptrs;
+    batch.signal_semaphores.payload_values = signal_semaphore_values;
+#if 1
+    IREE_RETURN_IF_ERROR(iree_hal_device_queue_submit(
+        device, IREE_HAL_COMMAND_CATEGORY_ANY, 0, 1, &batch));
 
-  iree_status_t status = iree_hal_device_submit_and_wait(
-      device, IREE_HAL_COMMAND_CATEGORY_ANY, 0, 1, &batch,
-      state->submit_semaphore, next_semaphore_value, iree_infinite_timeout());
-  if (!iree_status_is_ok(status)) {
+    // sync completion check
+    uint64_t post_submit_value = 0;
+    IREE_RETURN_IF_ERROR(
+        iree_hal_semaphore_query(state->submit_semaphore, &post_submit_value));
+    if (post_submit_value >= next_semaphore_value) {
+      return iree_ok_status();
+    }
+
+    current_frame->pc = 1;  // in wait
+
+    iree_vm_wait_frame_t* wait_frame = NULL;
+    IREE_RETURN_IF_ERROR(iree_vm_stack_wait_enter(
+        stack, IREE_VM_WAIT_ALL, 1, iree_infinite_timeout(), &wait_frame));
+    wait_frame->wait_sources[0] =
+        iree_hal_semaphore_await(state->submit_semaphore, next_semaphore_value);
+    return iree_status_from_code(IREE_STATUS_DEFERRED);
+#elif 0
+    IREE_RETURN_IF_ERROR(iree_hal_device_queue_submit(
+        device, IREE_HAL_COMMAND_CATEGORY_ANY, 0, 1, &batch));
+
+    current_frame->pc = 1;
+
+    iree_host_size_t frame_size =
+        iree_host_align(sizeof(iree_hal_module_wait_frame_t), 16);
+    iree_vm_stack_frame_t* wait_frame = NULL;
+    IREE_RETURN_IF_ERROR(iree_vm_stack_function_enter(
+        stack, NULL, IREE_VM_STACK_FRAME_WAIT, frame_size,
+        iree_hal_module_wait_frame_cleanup, &wait_frame));
+    iree_hal_module_wait_frame_t* wait_storage =
+        (iree_hal_module_wait_frame_t*)iree_vm_stack_frame_storage(wait_frame);
+    wait_storage->wait_source =
+        iree_hal_semaphore_await(state->submit_semaphore, next_semaphore_value);
+
+    return iree_status_from_code(IREE_STATUS_DEFERRED);
+#else
+    iree_status_t status = iree_hal_device_submit_and_wait(
+        device, IREE_HAL_COMMAND_CATEGORY_ANY, 0, 1, &batch,
+        state->submit_semaphore, next_semaphore_value, iree_infinite_timeout());
     return status;
+#endif
+  } else {
+    iree_status_t wait_status = iree_ok_status();
+    IREE_RETURN_IF_ERROR(iree_vm_stack_wait_leave(stack, &wait_status));
+    // DO NOT SUBMIT set as result value instead?
+    return wait_status;
   }
-
-  return iree_ok_status();
 }
 
 //===----------------------------------------------------------------------===//

@@ -197,6 +197,43 @@ static iree_status_t iree_vm_invoke_within(
   iree_status_t status =
       function.module->begin_call(function.module->self, stack, &call, &result);
   IREE_TRACE_FIBER_LEAVE();
+  while (iree_status_is_ok(status) || iree_status_is_deferred(status)) {
+    iree_vm_stack_frame_t* current_frame = iree_vm_stack_current_frame(stack);
+    if (!current_frame) break;
+    // DO NOT SUBMIT really handle wait frames
+    if (!current_frame->function.module) {
+      // wait frame - pretend we wait here
+      iree_vm_wait_frame_t* wait_frame =
+          (iree_vm_wait_frame_t*)iree_vm_stack_frame_storage(current_frame);
+      if (wait_frame->wait_type == IREE_VM_WAIT_UNTIL) {
+        wait_frame->wait_status =
+            iree_wait_until(wait_frame->deadline_ns)
+                ? iree_ok_status()
+                : iree_status_from_code(IREE_STATUS_ABORTED);
+      } else if (wait_frame->count == 1) {
+        wait_frame->wait_status = iree_wait_source_wait_one(
+            wait_frame->wait_sources[0], (iree_timeout_t){
+                                             .type = IREE_TIMEOUT_ABSOLUTE,
+                                             .nanos = wait_frame->deadline_ns,
+                                         });
+      } else {
+        // DO NOT SUBMIT multi-wait
+      }
+      IREE_TRACE_FIBER_ENTER(iree_vm_stack_context_id(stack));
+      iree_vm_function_t resume_function =
+          iree_vm_stack_parent_frame(stack)->function;
+      status = resume_function.module->resume_call(resume_function.module->self,
+                                                   stack, results, &result);
+      IREE_TRACE_FIBER_LEAVE();
+      continue;
+    } else {
+      IREE_TRACE_FIBER_ENTER(iree_vm_stack_context_id(stack));
+      iree_vm_function_t resume_function = current_frame->function;
+      status = resume_function.module->resume_call(resume_function.module->self,
+                                                   stack, results, &result);
+      IREE_TRACE_FIBER_LEAVE();
+    }
+  }
   if (!iree_status_is_ok(status)) {
     iree_vm_function_call_release(&call, &signature);
     return status;
